@@ -16,10 +16,9 @@ var (
 	ErrRWTimeout   = errors.New("r/w timeout")
 	ErrPingTimeout = errors.New("Ping timeout")
 
-	opRetries      = 2
-	opReadTimeout  = 4 * time.Second // client read
-	opWriteTimeout = 4 * time.Second // client write
-	opPingTimeout  = 8 * time.Second
+	opReadTimeout  = 8 * time.Second // client read
+	opWriteTimeout = 8 * time.Second // client write
+	opPingTimeout  = 1 * time.Second
 )
 
 //Client replica client
@@ -81,67 +80,60 @@ func (c *Client) Ping() error {
 }
 
 func (c *Client) operation(op uint32, buf []byte, offset int64) (int, error) {
-	retry := 0
-	for {
-		msg := Message{
-			Complete: make(chan struct{}, 1),
-			Type:     op,
-			Offset:   offset,
-			Size:     uint32(len(buf)),
-			Data:     nil,
+	msg := Message{
+		Complete: make(chan struct{}, 1),
+		Type:     op,
+		Offset:   offset,
+		Size:     uint32(len(buf)),
+		Data:     nil,
+	}
+
+	if op == TypeWrite {
+		msg.Data = buf
+	}
+
+	timeout := func(op uint32) <-chan time.Time {
+		switch op {
+		case TypeRead:
+			return time.After(opReadTimeout)
+		case TypeWrite:
+			return time.After(opWriteTimeout)
+		}
+		return time.After(opPingTimeout)
+	}(msg.Type)
+
+	c.requests <- &msg
+
+	select {
+	case <-msg.Complete:
+		// Only copy the message if a read is requested
+		if op == TypeRead && (msg.Type == TypeResponse || msg.Type == TypeEOF) {
+			copy(buf, msg.Data)
+		}
+		if msg.Type == TypeError {
+			return 0, errors.New(string(msg.Data))
+		}
+		if msg.Type == TypeEOF {
+			return int(msg.Size), io.EOF
+		}
+		return int(msg.Size), nil
+	case <-timeout:
+		switch msg.Type {
+		case TypeRead:
+			logrus.Errorln("Read timeout on replica", c.TargetID(), "seq=", msg.Seq, "size=", msg.Size/1024, "(kB)")
+		case TypeWrite:
+			logrus.Errorln("Write timeout on replica", c.TargetID(), "seq=", msg.Seq, "size=", msg.Size/1024, "(kB)")
+		case TypePing:
+			logrus.Errorln("Ping timeout on replica", c.TargetID(), "seq=", msg.Seq)
 		}
 
-		if op == TypeWrite {
-			msg.Data = buf
+		err := ErrRWTimeout
+		if msg.Type == TypePing {
+			err = ErrPingTimeout
 		}
-
-		timeout := func(op uint32) <-chan time.Time {
-			switch op {
-			case TypeRead:
-				return time.After(opReadTimeout)
-			case TypeWrite:
-				return time.After(opWriteTimeout)
-			}
-			return time.After(opPingTimeout)
-		}(msg.Type)
-
-		c.requests <- &msg
-
-		select {
-		case <-msg.Complete:
-			// Only copy the message if a read is requested
-			if op == TypeRead && (msg.Type == TypeResponse || msg.Type == TypeEOF) {
-				copy(buf, msg.Data)
-			}
-			if msg.Type == TypeError {
-				return 0, errors.New(string(msg.Data))
-			}
-			if msg.Type == TypeEOF {
-				return int(msg.Size), io.EOF
-			}
-			return int(msg.Size), nil
-		case <-timeout:
-			switch msg.Type {
-			case TypeRead:
-				logrus.Errorln("Read timeout on replica", c.TargetID(), "seq=", msg.Seq, "size=", msg.Size/1024, "(kB)")
-			case TypeWrite:
-				logrus.Errorln("Write timeout on replica", c.TargetID(), "seq=", msg.Seq, "size=", msg.Size/1024, "(kB)")
-			case TypePing:
-				logrus.Errorln("Ping timeout on replica", c.TargetID(), "seq=", msg.Seq)
-			}
-			if retry < opRetries {
-				retry++
-				logrus.Errorln("Retry ", retry, "on replica", c.TargetID(), "seq=", msg.Seq, "size=", msg.Size/1024, "(kB)")
-			} else {
-				err := ErrRWTimeout
-				if msg.Type == TypePing {
-					err = ErrPingTimeout
-				}
-				c.SetError(err)
-				journal.PrintLimited(1000) //flush automatically upon timeout
-				return 0, err
-			}
-		}
+		c.SetError(err)
+		journal.PrintLimited(1000) //flush automatically upon timeout
+		return 0, err
 	}
 }
 
