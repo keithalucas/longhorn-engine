@@ -1,6 +1,7 @@
 package remote
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -20,8 +21,10 @@ import (
 )
 
 var (
-	pingInveral   = 2 * time.Second
-	timeout       = 30 * time.Second
+	ErrPingTimeout = errors.New("Ping timeout")
+
+	pingInveral   = 1 * time.Second
+	pingTimeout   = 1 * time.Second
 	requestBuffer = 1024
 )
 
@@ -293,13 +296,31 @@ func (r *Remote) monitorPing(client *dataconn.Client) {
 			r.monitorChan <- nil
 			return
 		case <-ticker.C:
-			if err := client.Ping(); err != nil {
+			if err := r.pingWithTimeout(client); err != nil {
 				client.SetError(err)
 				r.monitorChan <- err
 				return
 			}
 		}
 	}
+}
+
+func (r *Remote) pingWithTimeout(client *dataconn.Client) error {
+	timeout := time.After(pingTimeout)
+	err := ErrPingTimeout
+
+	status := make(chan error, 1)
+
+	go func() {
+		status <- client.Ping()
+	}()
+
+	select {
+	case <-timeout:
+	case err = <-status:
+	}
+
+	return err
 }
 
 func (r *Remote) GetMonitorChannel() types.MonitorChannel {
