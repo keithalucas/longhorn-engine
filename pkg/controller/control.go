@@ -362,6 +362,7 @@ func (c *Controller) addReplicaNoLock(newBackend types.Backend, address string, 
 	c.replicas = append(c.replicas, types.Replica{
 		Address: address,
 		Mode:    mode,
+		Backend: newBackend,
 	})
 
 	c.backend.AddBackend(address, newBackend, mode)
@@ -395,6 +396,10 @@ func (c *Controller) RemoveReplica(address string) error {
 			if len(c.replicas) == 1 && c.frontend != nil && c.frontend.State() == types.StateUp {
 				return fmt.Errorf("Cannot remove last replica if volume is up")
 			}
+			// Stop the monitoring goroutine cleanly
+			monitorChan := r.Backend.GetMonitorChannel()
+			monitorChan <- nil
+
 			c.replicas = append(c.replicas[:i], c.replicas[i+1:]...)
 			c.backend.RemoveBackend(r.Address)
 		}
