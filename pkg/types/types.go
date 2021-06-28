@@ -94,6 +94,7 @@ type State string
 type Replica struct {
 	Address string
 	Mode    Mode
+	Backend Backend
 }
 
 type ReplicaSalvageInfo struct {
