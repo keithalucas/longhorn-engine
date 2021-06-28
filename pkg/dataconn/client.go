@@ -17,7 +17,8 @@ var (
 )
 
 const (
-	OPTimeout = 8 * time.Second
+	IoTimeout        = 8 * time.Second
+	IoTickerInterval = 1 * time.Second
 )
 
 //Client replica client
@@ -114,12 +115,13 @@ func (c *Client) Close() {
 
 func (c *Client) loop() {
 	defer close(c.send)
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(IoTickerInterval)
 	defer ticker.Stop()
 
 	var clientError error
-	var ioInflight int
-	var ioDeadline time.Time
+	ioInflight := 0
+	ioTicksForTimeout := int(IoTimeout / IoTickerInterval)
+	ioTicks := 0
 
 	// handleClientError cleans up all in flight messages
 	// also stores the error so that future requests/responses get errored immediately.
@@ -130,7 +132,7 @@ func (c *Client) loop() {
 		}
 
 		ioInflight = 0
-		ioDeadline = time.Time{}
+		ioTicks = 0
 	}
 
 	for {
@@ -138,13 +140,19 @@ func (c *Client) loop() {
 		case <-c.end:
 			return
 		case <-ticker.C:
-			if ioDeadline.IsZero() || time.Now().Before(ioDeadline) {
-				continue
+
+			if ioInflight > 0 {
+				ioTicks++
+
+				if ioTicks <= ioTicksForTimeout {
+					continue
+				}
+
+				logrus.Errorf("R/W Timeout. No response received in %v", IoTimeout)
+				handleClientError(ErrRWTimeout)
+				journal.PrintLimited(1000)
 			}
 
-			logrus.Errorf("R/W Timeout. No response received in %v", OPTimeout)
-			handleClientError(ErrRWTimeout)
-			journal.PrintLimited(1000)
 		case req := <-c.requests:
 			if clientError != nil {
 				c.replyError(req, clientError)
@@ -153,7 +161,7 @@ func (c *Client) loop() {
 
 			if req.Type == TypeRead || req.Type == TypeWrite {
 				if ioInflight == 0 {
-					ioDeadline = time.Now().Add(OPTimeout)
+					ioTicks = 0
 				}
 				ioInflight++
 			}
@@ -173,11 +181,7 @@ func (c *Client) loop() {
 
 			if req.Type == TypeRead || req.Type == TypeWrite {
 				ioInflight--
-				if ioInflight > 0 {
-					ioDeadline = time.Now().Add(OPTimeout)
-				} else if ioInflight == 0 {
-					ioDeadline = time.Time{}
-				}
+				ioTicks = 0
 			}
 
 			if clientError != nil {
