@@ -395,6 +395,10 @@ func (c *Controller) RemoveReplica(address string) error {
 			if len(c.replicas) == 1 && c.frontend != nil && c.frontend.State() == types.StateUp {
 				return fmt.Errorf("Cannot remove last replica if volume is up")
 			}
+			// Stop monitoring goroutine
+			monitorChan := c.backend.backends[r.Address].backend.GetMonitorChannel()
+			monitorChan <- nil
+
 			c.replicas = append(c.replicas[:i], c.replicas[i+1:]...)
 			c.backend.RemoveBackend(r.Address)
 		}
