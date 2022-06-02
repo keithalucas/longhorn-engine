@@ -95,7 +95,7 @@ RUN go get \
 RUN cd /usr/src && \
     git clone https://github.com/rancher/liblonghorn.git && \
     cd liblonghorn && \
-    git checkout 09956ed9329d51f41a85d6e06113948c947976a8 && \
+    git checkout 6544c2432d543137a198e4a779f676369dbd9e82 && \
     make && \
     make install
 
